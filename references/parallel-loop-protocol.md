@@ -6,11 +6,24 @@ runs N experiments simultaneously on the Ray cluster instead of 1.
 ## Why Parallel?
 
 ML training is expensive (minutes per run). Sequential search wastes cluster idle time.
+Parallelism can be achieved two ways — choose based on model size:
+
+### Option A: Fractional GPU (preferred for small models < ~5GB VRAM)
+
+Set `num_gpus=0.5` in `train.py`. Ray schedules 2 tasks per GPU, 16 total on a 2×4 cluster.
+No code changes needed beyond `NUM_GPUS = 0.5` and `torch.cuda.set_per_process_memory_fraction(0.45, 0)`.
+
+| num_gpus | Tasks per GPU | Total (8-GPU cluster) | When to use |
+|----------|---------------|----------------------|-------------|
+| 0.5      | 2             | 16                   | Model < 5GB VRAM |
+| 0.25     | 4             | 32                   | Model < 2GB VRAM |
+| 1.0      | 1             | 8                    | Model > 10GB VRAM |
+
+### Option B: Fractional workers per DDP job (for large models needing DDP)
+
 With 8 GPUs and each job using 8 workers, you can only run 1 job at a time.
 But with each job using 4 workers (1 node), you can run 2 jobs simultaneously.
 With 2 workers each, you can run 4 jobs simultaneously (faster iteration, lower per-run accuracy).
-
-**Recommended configs:**
 
 | Cluster | Workers/job | Parallel jobs | Tradeoff |
 |---------|-------------|---------------|---------|

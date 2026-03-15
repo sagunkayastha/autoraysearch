@@ -14,8 +14,50 @@ train.py    ← generated once, never touched again
 
 | Template | When to use |
 |----------|-------------|
-| [Single-GPU](#single-gpu-template) | Custom DataLoaders, multi-input models, existing `train_main()` function, any model that runs on 1 GPU |
+| [Single-GPU / Fractional](#single-gpu-template) | Custom DataLoaders, multi-input models, existing `train_main()` function, small models (< a few GB VRAM). Supports fractional GPU (`num_gpus=0.5`) to run 2 tasks per GPU simultaneously. |
 | [Multi-GPU DDP](#multi-gpu-ddp-template) | CIFAR-style image classification, models that benefit from 4-GPU data parallelism |
+
+### Adaptive GPU Allocation (recommended)
+
+Start with `num_gpus=0.5` to pack 2 experiments per GPU. If the model causes OOM, automatically retry with a full GPU. This requires two pre-declared remote functions (Ray resource allocation is fixed at decoration time) and an OOM-aware wrapper in `main()`:
+
+```python
+def _run_training(mem_fraction):
+    import torch
+    if mem_fraction is not None:
+        torch.cuda.set_per_process_memory_fraction(mem_fraction, 0)
+    # ... all training logic here, using cuda:0
+
+@ray.remote(num_gpus=0.5)
+def _train_half_gpu():
+    return _run_training(mem_fraction=0.45)   # ~18GB of 40GB
+
+@ray.remote(num_gpus=1.0)
+def _train_full_gpu():
+    return _run_training(mem_fraction=None)   # full 40GB
+
+def _is_oom(exc):
+    return "OutOfMemoryError" in str(exc) or "CUDA out of memory" in str(exc)
+
+def main():
+    ray.init(address="auto", runtime_env={"working_dir": ...})
+    try:
+        result = ray.get(_train_half_gpu.remote())
+    except ray.exceptions.RayTaskError as e:
+        if _is_oom(e):
+            print("OOM at 0.5 GPU — retrying with full GPU", flush=True)
+            result = ray.get(_train_full_gpu.remote())
+        else:
+            raise
+    print(f"val_acc={result:.4f}")
+```
+
+| num_gpus | Tasks per GPU | Total (8-GPU cluster) | VRAM budget per task |
+|----------|---------------|----------------------|---------------------|
+| 0.5      | 2             | 16                   | ~18 GB (cap at 0.45)|
+| 1.0      | 1             | 8                    | 40 GB (no cap)      |
+
+**Rule**: `mem_fraction` should be slightly below `num_gpus` to leave headroom (e.g. `0.45` for `0.5`). Ray sets `CUDA_VISIBLE_DEVICES` per task, so `cuda:0` inside the task always refers to the assigned physical GPU.
 
 ---
 
@@ -52,12 +94,14 @@ class Model(nn.Module):
         return predictions  # [B, H]
 ```
 
-### train.py Template (Single-GPU)
+### train.py Template (Single-GPU, adaptive)
 
 ```python
 """
 Single-GPU Ray trainer — DO NOT MODIFY (boilerplate).
 Autoresearch scope: model.py
+
+GPU strategy: tries 0.5 GPU first (2 tasks/GPU). Falls back to full GPU on OOM.
 """
 
 import os
@@ -65,26 +109,33 @@ import ray
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 
-# Configuration — edit these
-CONFIG_PATH = "{{CONFIG_PATH}}"   # path to your config / hyperparams
-OUTPUT_DIR  = "{{OUTPUT_DIR}}"    # where to write checkpoints and results
-NUM_GPUS    = 1
+CONFIG_PATH = "{{CONFIG_PATH}}"
+OUTPUT_DIR  = "{{OUTPUT_DIR}}"
 
 
-@ray.remote(num_gpus=NUM_GPUS)
-def _train_remote(config):
-    import sys
+def _run_training(config, mem_fraction):
+    import sys, torch
+    if mem_fraction is not None:
+        torch.cuda.set_per_process_memory_fraction(mem_fraction, 0)
     sys.path.insert(0, config["working_dir"])
 
-    # Import your training logic. train_main must:
-    #   - Build DataLoaders internally (using config["config_path"])
-    #   - Import Model from model.py
-    #   - Train the model
-    #   - Return a single scalar: the validation metric (higher = better)
+    # train_main must return a scalar metric (higher = better)
     from train_fn import train_main
+    return float(train_main(config["config_path"], config["output_dir"]))
 
-    val_metric = train_main(config["config_path"], config["output_dir"])
-    return float(val_metric)
+
+@ray.remote(num_gpus=0.5)
+def _train_half(config):
+    return _run_training(config, mem_fraction=0.45)
+
+
+@ray.remote(num_gpus=1.0)
+def _train_full(config):
+    return _run_training(config, mem_fraction=None)
+
+
+def _is_oom(exc):
+    return "OutOfMemoryError" in str(exc) or "CUDA out of memory" in str(exc)
 
 
 def main():
@@ -94,7 +145,14 @@ def main():
         "output_dir": OUTPUT_DIR,
     }
     ray.init(address="auto", runtime_env={"working_dir": config["working_dir"]})
-    val_acc = ray.get(_train_remote.remote(config))
+    try:
+        val_acc = ray.get(_train_half.remote(config))
+    except ray.exceptions.RayTaskError as e:
+        if _is_oom(e):
+            print("OOM at 0.5 GPU — retrying with full GPU", flush=True)
+            val_acc = ray.get(_train_full.remote(config))
+        else:
+            raise
     print(f"val_acc={val_acc:.4f}")
 
 if __name__ == "__main__":

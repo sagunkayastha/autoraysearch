@@ -31,6 +31,13 @@ Ask or infer:
 - `NUM_WORKERS`: total GPUs across all nodes (default: 8 for 2x4-GPU setup)
 - `RAY_ADDRESS`: usually "auto" if cluster is already running
 - `PYTHON`: path to Python binary with Ray + PyTorch installed
+- GPU allocation per experiment — ask the user:
+  ```
+  How much GPU should each experiment get?
+    A) 1 GPU per experiment (default — safest)
+    B) 0.5 GPU — 2 experiments share one GPU (2x more parallel, auto-falls back on OOM)
+  ```
+  Default to A (1 GPU) if the user doesn't specify or is unsure.
 
 Confirm cluster is live:
 ```bash
@@ -85,6 +92,7 @@ Show user:
 Cluster:   {N} GPUs across {M} nodes
 Model:     {model file} — {class name}
 Dataset:   {dataset name}
+GPU/task:  {0.5 (2 tasks/GPU, OOM→fallback to 1.0) | 1.0 (1 task/GPU)}
 Baseline:  val_acc={value}
 Scope:     {model file} (train.py is read-only boilerplate)
 Verify:    python train.py

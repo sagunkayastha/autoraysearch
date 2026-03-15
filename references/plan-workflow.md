@@ -77,7 +77,15 @@ Options:
 - Ask for: dataset type (CIFAR10 / CIFAR100 / custom numpy / custom DataLoader)
 - Ask for: number of GPUs to use (default: 4)
 - Ask for: data path (if custom)
-- Generate train.py from `references/train-template.md`
+- Ask:
+  ```
+  GPU allocation per experiment?
+    A) 1 GPU per experiment (default — safest, up to 8 parallel on this cluster)
+    B) 0.5 GPU per experiment — 2 experiments share one GPU (up to 16 parallel,
+       auto-falls back to full GPU on OOM)
+  ```
+  Default is A if user does not respond or is unsure.
+- Generate train.py from `references/train-template.md` using the chosen allocation
 - Place it alongside model.py
 
 ---
@@ -110,6 +118,7 @@ Goal:      {user's goal}
 Model:     {model file path} — class Model
 train.py:  {train.py path} (read-only)
 Cluster:   {N} GPUs across {M} nodes
+GPU/task:  {0.5 (2 tasks/GPU, OOM→fallback to 1.0) | 1.0 (1 task/GPU)}
 Baseline:  val_acc={value}
 Metric:    val_acc = (R² + IOA) / 2 — higher is better
 Scope:     model.py only (train.py is never modified)
